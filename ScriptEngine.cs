@@ -186,11 +186,35 @@ namespace PindleRunner
                 return null;
             }
             
-            if (t[0].Equals("PRESS", StringComparison.OrdinalIgnoreCase) && t.Length >= 2)
+            if ((t[0].Equals("PRESS", StringComparison.OrdinalIgnoreCase) || t[0].Equals("KEYPRESS", StringComparison.OrdinalIgnoreCase)) && t.Length >= 2)
             {
                 var key = t[1].Trim('"');
                 Console.WriteLine($"[DEBUG] PRESS {key}");
-                if (TryKey(key, out var vk)) input.KeyPress(vk);
+                if (key.Contains('+'))
+                {
+                    if (TryChord(key, out var mods, out var main))
+                    {
+                        input.KeyChord(mods, main);
+                    }
+                }
+                else
+                {
+                    if (TryKey(key, out var vk)) input.KeyPress(vk);
+                }
+                return null;
+            }
+            if (t[0].Equals("KEYDOWN", StringComparison.OrdinalIgnoreCase) && t.Length >= 2)
+            {
+                var key = t[1].Trim('"');
+                Console.WriteLine($"[DEBUG] KEYDOWN {key}");
+                if (TryKey(key, out var vk)) input.KeyDown(vk);
+                return null;
+            }
+            if (t[0].Equals("KEYUP", StringComparison.OrdinalIgnoreCase) && t.Length >= 2)
+            {
+                var key = t[1].Trim('"');
+                Console.WriteLine($"[DEBUG] KEYUP {key}");
+                if (TryKey(key, out var vk)) input.KeyUp(vk);
                 return null;
             }
             if (t[0].Equals("PRINT", StringComparison.OrdinalIgnoreCase) && t.Length >= 2)
@@ -645,6 +669,18 @@ namespace PindleRunner
         bool TryKey(string key, out VirtualKey vk)
         {
             key = key.Trim().ToUpperInvariant();
+            switch (key)
+            {
+                case "ESC": vk = VirtualKey.ESCAPE; return true;
+                case "ENTER": vk = VirtualKey.RETURN; return true;
+                case "RETURN": vk = VirtualKey.RETURN; return true;
+                case "SPACE": vk = VirtualKey.SPACE; return true;
+                case "CTRL": vk = VirtualKey.LCONTROL; return true;
+                case "CONTROL": vk = VirtualKey.LCONTROL; return true;
+                case "SHIFT": vk = VirtualKey.LSHIFT; return true;
+                case "ALT": vk = VirtualKey.MENU; return true;
+                case "WIN": vk = VirtualKey.LWIN; return true;
+            }
             if (Enum.TryParse<VirtualKey>(key, true, out vk)) return true;
             if (key.Length == 1)
             {
@@ -658,6 +694,24 @@ namespace PindleRunner
                 if (v != 0) { vk = (VirtualKey)v; return true; }
             }
             return false;
+        }
+
+        bool TryChord(string spec, out VirtualKey[] modifiers, out VirtualKey main)
+        {
+            modifiers = Array.Empty<VirtualKey>();
+            main = default;
+            var parts = spec.Split('+', StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length < 2) return false;
+            var mods = new List<VirtualKey>();
+            for (int i = 0; i < parts.Length - 1; i++)
+            {
+                if (TryKey(parts[i].Trim(), out var mv)) mods.Add(mv);
+                else return false;
+            }
+            if (!TryKey(parts[^1].Trim(), out var kv)) return false;
+            modifiers = mods.ToArray();
+            main = kv;
+            return true;
         }
 
         [System.Runtime.InteropServices.DllImport("user32.dll")]

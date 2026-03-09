@@ -5,11 +5,31 @@ namespace PindleRunner
 {
     public enum VirtualKey : ushort
     {
-        ESCAPE = 0x1B,
+        BACK = 0x08,
+        TAB = 0x09,
         RETURN = 0x0D,
+        ESCAPE = 0x1B,
         SPACE = 0x20,
+        LWIN = 0x5B,
+        RWIN = 0x5C,
+        PRIOR = 0x21,
+        NEXT = 0x22,
+        END = 0x23,
+        HOME = 0x24,
+        LEFT = 0x25,
+        UP = 0x26,
+        RIGHT = 0x27,
+        DOWN = 0x28,
+        INSERT = 0x2D,
+        DELETE = 0x2E,
+        CAPITAL = 0x14,
+        MENU = 0x12,
         LSHIFT = 0xA0,
+        RSHIFT = 0xA1,
         LCONTROL = 0xA2,
+        RCONTROL = 0xA3,
+        LMENU = 0xA4,
+        RMENU = 0xA5,
         F1 = 0x70,
         F2 = 0x71,
         F3 = 0x72,
@@ -57,6 +77,37 @@ namespace PindleRunner
                 U = new InputUnion { ki = new KEYBDINPUT { wVk = (ushort)key, dwFlags = KEYEVENTF_KEYUP } }
             };
             SendInput(2, new[] { down, up }, Marshal.SizeOf<INPUT>());
+        }
+
+        public void KeyChord(VirtualKey[] modifiers, VirtualKey key)
+        {
+            var inputs = new System.Collections.Generic.List<INPUT>();
+            foreach (var m in modifiers)
+            {
+                inputs.Add(new INPUT { type = INPUT_KEYBOARD, U = new InputUnion { ki = new KEYBDINPUT { wVk = (ushort)m } } });
+            }
+            inputs.Add(new INPUT { type = INPUT_KEYBOARD, U = new InputUnion { ki = new KEYBDINPUT { wVk = (ushort)key } } });
+            inputs.Add(new INPUT { type = INPUT_KEYBOARD, U = new InputUnion { ki = new KEYBDINPUT { wVk = (ushort)key, dwFlags = KEYEVENTF_KEYUP } } });
+            for (int i = modifiers.Length - 1; i >= 0; i--)
+            {
+                inputs.Add(new INPUT { type = INPUT_KEYBOARD, U = new InputUnion { ki = new KEYBDINPUT { wVk = (ushort)modifiers[i], dwFlags = KEYEVENTF_KEYUP } } });
+            }
+            if (inputs.Count > 0)
+            {
+                SendInput((uint)inputs.Count, inputs.ToArray(), Marshal.SizeOf<INPUT>());
+            }
+        }
+
+        public void KeyDown(VirtualKey key)
+        {
+            var down = new INPUT { type = INPUT_KEYBOARD, U = new InputUnion { ki = new KEYBDINPUT { wVk = (ushort)key } } };
+            SendInput(1, new[] { down }, Marshal.SizeOf<INPUT>());
+        }
+
+        public void KeyUp(VirtualKey key)
+        {
+            var up = new INPUT { type = INPUT_KEYBOARD, U = new InputUnion { ki = new KEYBDINPUT { wVk = (ushort)key, dwFlags = KEYEVENTF_KEYUP } } };
+            SendInput(1, new[] { up }, Marshal.SizeOf<INPUT>());
         }
 
         public void ClickClient(IntPtr hwnd, int cx, int cy)
