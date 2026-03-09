@@ -1,0 +1,7 @@
+// 演示脚本
+i = 0
+DO
+  i = i + 1
+  MOVE TO 100, 100
+  DELAY 500
+LOOP WHILE i < 3
