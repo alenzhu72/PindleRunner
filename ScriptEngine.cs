@@ -33,7 +33,7 @@ namespace PindleRunner
             this.matcher = matcher;
         }
 
-        public void RunFile(string path)
+        public void RunFile(string path, CancellationToken token = default)
         {
             if (!File.Exists(path))
             {
@@ -55,11 +55,11 @@ namespace PindleRunner
                 }
             }
 
-            Run(lines);
+            Run(lines, token);
             Console.WriteLine("脚本执行完成");
         }
 
-        public void Run(string[] lines)
+        public void Run(string[] lines, CancellationToken token = default)
         {
             labels.Clear();
             doStack.Clear();
@@ -128,6 +128,8 @@ namespace PindleRunner
             int ip = 0;
             while (ip < lines.Length)
             {
+                if (token.IsCancellationRequested) return;
+
                 var raw = lines[ip].Trim();
                 if (string.IsNullOrEmpty(raw) || raw.StartsWith("//")) { ip++; continue; }
                 
@@ -138,15 +140,23 @@ namespace PindleRunner
                 if (string.IsNullOrEmpty(line)) { ip++; continue; }
                 
                 var tokens = Tokenize(line);
-                var nextIp = Execute(tokens, ip);
+                var nextIp = Execute(tokens, ip, token);
                 
                 if (nextIp.HasValue) ip = nextIp.Value; else ip++;
             }
         }
 
-        int? Execute(string[] t, int ip)
+        int? Execute(string[] t, int ip, CancellationToken token)
         {
             if (t.Length == 0) return null;
+
+            if (t[0].Equals("END", StringComparison.OrdinalIgnoreCase) ||
+                t[0].Equals("STOP", StringComparison.OrdinalIgnoreCase) ||
+                t[0].Equals("EXITSCRIPT", StringComparison.OrdinalIgnoreCase))
+            {
+                Console.WriteLine("[DEBUG] END");
+                return int.MaxValue;
+            }
 
             if (t[0].Equals("MOVE", StringComparison.OrdinalIgnoreCase) && t.Length >= 4 && t[1].Equals("TO", StringComparison.OrdinalIgnoreCase))
             {
@@ -165,9 +175,10 @@ namespace PindleRunner
                 Console.WriteLine($"[DEBUG] LEFTCLICK {n}");
                 for (int i = 0; i < n; i++)
                 {
+                    if (token.IsCancellationRequested) return null;
                     POINT p; GetCursorPos(out p);
                     input.ClickClient(window.HWnd, p.X - rect.X, p.Y - rect.Y);
-                    Thread.Sleep(50);
+                    if (token.WaitHandle.WaitOne(50)) return null;
                 }
                 return null;
             }
@@ -179,9 +190,10 @@ namespace PindleRunner
                 Console.WriteLine($"[DEBUG] RIGHTCLICK {n}");
                 for (int i = 0; i < n; i++)
                 {
+                    if (token.IsCancellationRequested) return null;
                     POINT p; GetCursorPos(out p);
                     input.RightClickClient(window.HWnd, p.X - rect.X, p.Y - rect.Y);
-                    Thread.Sleep(50);
+                    if (token.WaitHandle.WaitOne(50)) return null;
                 }
                 return null;
             }
@@ -207,6 +219,23 @@ namespace PindleRunner
             {
                 var key = t[1].Trim('"');
                 Console.WriteLine($"[DEBUG] KEYDOWN {key}");
+                if (key.Equals("SHIFT", StringComparison.OrdinalIgnoreCase))
+                {
+                    input.KeyDown(VirtualKey.LSHIFT);
+                    input.KeyDown(VirtualKey.RSHIFT);
+                    return null;
+                }
+                if (key.Equals("CTRL", StringComparison.OrdinalIgnoreCase) || key.Equals("CONTROL", StringComparison.OrdinalIgnoreCase))
+                {
+                    input.KeyDown(VirtualKey.LCONTROL);
+                    input.KeyDown(VirtualKey.RCONTROL);
+                    return null;
+                }
+                if (key.Equals("ALT", StringComparison.OrdinalIgnoreCase))
+                {
+                    input.KeyDown(VirtualKey.LMENU);
+                    return null;
+                }
                 if (TryKey(key, out var vk)) input.KeyDown(vk);
                 return null;
             }
@@ -214,6 +243,23 @@ namespace PindleRunner
             {
                 var key = t[1].Trim('"');
                 Console.WriteLine($"[DEBUG] KEYUP {key}");
+                if (key.Equals("SHIFT", StringComparison.OrdinalIgnoreCase))
+                {
+                    input.KeyUp(VirtualKey.RSHIFT);
+                    input.KeyUp(VirtualKey.LSHIFT);
+                    return null;
+                }
+                if (key.Equals("CTRL", StringComparison.OrdinalIgnoreCase) || key.Equals("CONTROL", StringComparison.OrdinalIgnoreCase))
+                {
+                    input.KeyUp(VirtualKey.RCONTROL);
+                    input.KeyUp(VirtualKey.LCONTROL);
+                    return null;
+                }
+                if (key.Equals("ALT", StringComparison.OrdinalIgnoreCase))
+                {
+                    input.KeyUp(VirtualKey.LMENU);
+                    return null;
+                }
                 if (TryKey(key, out var vk)) input.KeyUp(vk);
                 return null;
             }
@@ -251,7 +297,7 @@ namespace PindleRunner
             {
                 int ms = (int)Eval(t[1]);
                 Console.WriteLine($"[DEBUG] DELAY {ms}");
-                Thread.Sleep(ms);
+                if (token.WaitHandle.WaitOne(ms)) return null;
                 return null;
             }
             
@@ -264,16 +310,184 @@ namespace PindleRunner
                 int y2 = (int)Eval(t[4]);
                 var hex = t[5].Trim('"', '#');
                 double sim = double.Parse(t[6], CultureInfo.InvariantCulture);
+                string outX = "X", outY = "Y";
+                if (t.Length >= 8)
+                {
+                    int idx = 7;
+                    if (t[idx].Equals("OUT", StringComparison.OrdinalIgnoreCase) || t[idx].Equals("输出", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (idx + 1 < t.Length) { outX = t[idx + 1]; idx += 2; }
+                    }
+                    else
+                    {
+                        outX = t[idx]; idx += 1;
+                    }
+                    if (idx < t.Length)
+                    {
+                        if (t[idx].Equals("OUT", StringComparison.OrdinalIgnoreCase) || t[idx].Equals("输出", StringComparison.OrdinalIgnoreCase))
+                        {
+                            if (idx + 1 < t.Length) outY = t[idx + 1];
+                        }
+                        else
+                        {
+                            outY = t[idx];
+                        }
+                    }
+                }
                 
                 var color = ParseHex(hex);
                 var img = capture.Capture(rect);
                 var found = FindColor(img, x1, y1, x2, y2, color, sim, out var fx, out var fy);
                 
-                vars["X"] = fx;
-                vars["Y"] = fy;
+                vars[outX] = fx;
+                vars[outY] = fy;
                 vars["FOUND"] = found ? 1 : 0;
                 
-                Console.WriteLine($"[DEBUG] FINDCOLOR {hex}: Found={found} ({fx},{fy})");
+                Console.WriteLine($"[DEBUG] FINDCOLOR {hex}: Found={found} ({fx},{fy}) -> {outX},{outY}");
+                return null;
+            }
+
+            if (t[0].Equals("FINDCOLORN", StringComparison.OrdinalIgnoreCase) && t.Length >= 8)
+            {
+                if (!window.GetClientRect(out var rect)) return null;
+                int x1 = (int)Eval(t[1]);
+                int y1 = (int)Eval(t[2]);
+                int x2 = (int)Eval(t[3]);
+                int y2 = (int)Eval(t[4]);
+                var hex = t[5].Trim('"', '#');
+                double sim = double.Parse(t[6], CultureInfo.InvariantCulture);
+                int minCount = (int)Eval(t[7]);
+                string outX = "X", outY = "Y";
+                if (t.Length >= 9)
+                {
+                    int idx = 8;
+                    if (t[idx].Equals("OUT", StringComparison.OrdinalIgnoreCase) || t[idx].Equals("输出", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (idx + 1 < t.Length) { outX = t[idx + 1]; idx += 2; }
+                    }
+                    else
+                    {
+                        outX = t[idx]; idx += 1;
+                    }
+                    if (idx < t.Length)
+                    {
+                        if (t[idx].Equals("OUT", StringComparison.OrdinalIgnoreCase) || t[idx].Equals("输出", StringComparison.OrdinalIgnoreCase))
+                        {
+                            if (idx + 1 < t.Length) outY = t[idx + 1];
+                        }
+                        else
+                        {
+                            outY = t[idx];
+                        }
+                    }
+                }
+
+                var color = ParseHex(hex);
+                var img = capture.Capture(rect);
+                var found = FindColorN(img, x1, y1, x2, y2, color, sim, minCount, out var fx, out var fy, out var cnt);
+
+                vars[outX] = fx;
+                vars[outY] = fy;
+                vars["FOUND"] = found ? 1 : 0;
+
+                Console.WriteLine($"[DEBUG] FINDCOLORN {hex}: Found={found} count={cnt}/{minCount} ({fx},{fy}) -> {outX},{outY}");
+                return null;
+            }
+
+            if ((t[0].Equals("FINDCOLORCENTER", StringComparison.OrdinalIgnoreCase) ||
+                 t[0].Equals("FINDCOLORC", StringComparison.OrdinalIgnoreCase)) && t.Length >= 8)
+            {
+                if (!window.GetClientRect(out var rect)) return null;
+                int x1 = (int)Eval(t[1]);
+                int y1 = (int)Eval(t[2]);
+                int x2 = (int)Eval(t[3]);
+                int y2 = (int)Eval(t[4]);
+                var hex = t[5].Trim('"', '#');
+                double sim = double.Parse(t[6], CultureInfo.InvariantCulture);
+                int minCount = (int)Eval(t[7]);
+                string outX = "X", outY = "Y";
+                if (t.Length >= 9)
+                {
+                    int idx = 8;
+                    if (t[idx].Equals("OUT", StringComparison.OrdinalIgnoreCase) || t[idx].Equals("输出", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (idx + 1 < t.Length) { outX = t[idx + 1]; idx += 2; }
+                    }
+                    else
+                    {
+                        outX = t[idx]; idx += 1;
+                    }
+                    if (idx < t.Length)
+                    {
+                        if (t[idx].Equals("OUT", StringComparison.OrdinalIgnoreCase) || t[idx].Equals("输出", StringComparison.OrdinalIgnoreCase))
+                        {
+                            if (idx + 1 < t.Length) outY = t[idx + 1];
+                        }
+                        else
+                        {
+                            outY = t[idx];
+                        }
+                    }
+                }
+
+                var color = ParseHex(hex);
+                var img = capture.Capture(rect);
+                var found = FindColorCenter(img, x1, y1, x2, y2, color, sim, minCount, out var cx, out var cy, out var cnt);
+
+                vars[outX] = cx;
+                vars[outY] = cy;
+                vars["FOUND"] = found ? 1 : 0;
+
+                Console.WriteLine($"[DEBUG] FINDCOLORCENTER {hex}: Found={found} count={cnt}/{minCount} ({cx},{cy}) -> {outX},{outY}");
+                return null;
+            }
+
+            if ((t[0].Equals("FINDCOLORBLOB", StringComparison.OrdinalIgnoreCase) ||
+                 t[0].Equals("FINDCOLORB", StringComparison.OrdinalIgnoreCase)) && t.Length >= 9)
+            {
+                if (!window.GetClientRect(out var rect)) return null;
+                int x1 = (int)Eval(t[1]);
+                int y1 = (int)Eval(t[2]);
+                int x2 = (int)Eval(t[3]);
+                int y2 = (int)Eval(t[4]);
+                var hex = t[5].Trim('"', '#');
+                double sim = double.Parse(t[6], CultureInfo.InvariantCulture);
+                int minCount = (int)Eval(t[7]);
+                int maxCount = (int)Eval(t[8]);
+                string outX = "X", outY = "Y";
+                if (t.Length >= 10)
+                {
+                    int idx = 9;
+                    if (t[idx].Equals("OUT", StringComparison.OrdinalIgnoreCase) || t[idx].Equals("输出", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (idx + 1 < t.Length) { outX = t[idx + 1]; idx += 2; }
+                    }
+                    else
+                    {
+                        outX = t[idx]; idx += 1;
+                    }
+                    if (idx < t.Length)
+                    {
+                        if (t[idx].Equals("OUT", StringComparison.OrdinalIgnoreCase) || t[idx].Equals("输出", StringComparison.OrdinalIgnoreCase))
+                        {
+                            if (idx + 1 < t.Length) outY = t[idx + 1];
+                        }
+                        else
+                        {
+                            outY = t[idx];
+                        }
+                    }
+                }
+
+                var color = ParseHex(hex);
+                var img = capture.Capture(rect);
+                var found = FindColorBlob(img, x1, y1, x2, y2, color, sim, minCount, maxCount, out var bx, out var by, out var bestCount);
+
+                vars[outX] = bx;
+                vars[outY] = by;
+                vars["FOUND"] = found ? 1 : 0;
+
+                Console.WriteLine($"[DEBUG] FINDCOLORBLOB {hex}: Found={found} count={bestCount} ({bx},{by}) -> {outX},{outY}");
                 return null;
             }
             
@@ -391,6 +605,14 @@ namespace PindleRunner
                 return null;
             }
             
+            if (t[0].Equals("GOTO", StringComparison.OrdinalIgnoreCase) && t.Length >= 2)
+            {
+                var label = t[1];
+                if (labels.TryGetValue(label, out var dest)) return dest;
+                Console.WriteLine($"[WARNING] 未找到标签: {label}");
+                return null;
+            }
+            
             if (t[0].Equals("IF", StringComparison.OrdinalIgnoreCase))
             {
                 int idxThen = Array.IndexOf(t, "THEN");
@@ -443,7 +665,18 @@ namespace PindleRunner
                 
                 vars[varName] = start;
                 Console.WriteLine($"[DEBUG] FOR {varName} = {start} TO {end}");
-                forStack.Push(new ForFrame { Var = varName, End = end, Step = step, StartIp = ip });
+                forStack.Push(new ForFrame { Var = varName, End = end, Step = step, StartIp = ip + 1 });
+                return null;
+            }
+
+            if (t[0].Equals("EXIT", StringComparison.OrdinalIgnoreCase) || t[0].Equals("EXITFOR", StringComparison.OrdinalIgnoreCase))
+            {
+                if (forStack.Count > 0)
+                {
+                    var top = forStack.Peek();
+                    vars[top.Var] = top.End;
+                    Console.WriteLine($"[DEBUG] EXIT FOR {top.Var}");
+                }
                 return null;
             }
             
@@ -627,6 +860,210 @@ namespace PindleRunner
             return false;
         }
 
+        bool FindColorN(ImageData img, int x1, int y1, int x2, int y2, int[] rgb, double sim, int minCount, out int fx, out int fy, out int count)
+        {
+            fx = 0; fy = 0;
+            count = 0;
+            int xmin = Math.Max(0, Math.Min(x1, x2));
+            int xmax = Math.Min(img.Width - 1, Math.Max(x1, x2));
+            int ymin = Math.Max(0, Math.Min(y1, y2));
+            int ymax = Math.Min(img.Height - 1, Math.Max(y1, y2));
+            double thr = 1.0 - sim;
+            for (int y = ymin; y <= ymax; y++)
+            {
+                var o = y * img.Stride;
+                for (int x = xmin; x <= xmax; x++)
+                {
+                    var b = img.Buffer[o + x * 4 + 0];
+                    var g = img.Buffer[o + x * 4 + 1];
+                    var r = img.Buffer[o + x * 4 + 2];
+                    double dr = Math.Abs(r - rgb[0]) / 255.0;
+                    double dg = Math.Abs(g - rgb[1]) / 255.0;
+                    double db = Math.Abs(b - rgb[2]) / 255.0;
+                    double d = Math.Max(Math.Max(dr, dg), db);
+                    if (d <= thr)
+                    {
+                        if (count == 0) { fx = x; fy = y; }
+                        count++;
+                        if (count >= minCount) return true;
+                    }
+                }
+            }
+            fx = 0; fy = 0;
+            return false;
+        }
+
+        bool FindColorCenter(ImageData img, int x1, int y1, int x2, int y2, int[] rgb, double sim, int minCount, out int cx, out int cy, out int count)
+        {
+            cx = 0; cy = 0;
+            count = 0;
+            int xmin = Math.Max(0, Math.Min(x1, x2));
+            int xmax = Math.Min(img.Width - 1, Math.Max(x1, x2));
+            int ymin = Math.Max(0, Math.Min(y1, y2));
+            int ymax = Math.Min(img.Height - 1, Math.Max(y1, y2));
+            double thr = 1.0 - sim;
+
+            long sumX = 0;
+            long sumY = 0;
+            for (int y = ymin; y <= ymax; y++)
+            {
+                var o = y * img.Stride;
+                for (int x = xmin; x <= xmax; x++)
+                {
+                    var b = img.Buffer[o + x * 4 + 0];
+                    var g = img.Buffer[o + x * 4 + 1];
+                    var r = img.Buffer[o + x * 4 + 2];
+                    double dr = Math.Abs(r - rgb[0]) / 255.0;
+                    double dg = Math.Abs(g - rgb[1]) / 255.0;
+                    double db = Math.Abs(b - rgb[2]) / 255.0;
+                    double d = Math.Max(Math.Max(dr, dg), db);
+                    if (d <= thr)
+                    {
+                        count++;
+                        sumX += x;
+                        sumY += y;
+                    }
+                }
+            }
+
+            if (count < minCount)
+            {
+                cx = 0; cy = 0;
+                return false;
+            }
+
+            cx = (int)Math.Round(sumX / (double)count);
+            cy = (int)Math.Round(sumY / (double)count);
+            return true;
+        }
+
+        bool FindColorBlob(ImageData img, int x1, int y1, int x2, int y2, int[] rgb, double sim, int minCount, int maxCount, out int bx, out int by, out int bestCount)
+        {
+            bx = 0; by = 0;
+            bestCount = 0;
+            int xmin = Math.Max(0, Math.Min(x1, x2));
+            int xmax = Math.Min(img.Width - 1, Math.Max(x1, x2));
+            int ymin = Math.Max(0, Math.Min(y1, y2));
+            int ymax = Math.Min(img.Height - 1, Math.Max(y1, y2));
+            double thr = 1.0 - sim;
+            if (maxCount <= 0) maxCount = int.MaxValue;
+
+            int w = xmax - xmin + 1;
+            int h = ymax - ymin + 1;
+            if (w <= 0 || h <= 0) return false;
+
+            var visited = new bool[w * h];
+            var qx = new int[Math.Min(w * h, 200_000)];
+            var qy = new int[qx.Length];
+
+            bool IsMatch(int x, int y)
+            {
+                var o = y * img.Stride + x * 4;
+                var b = img.Buffer[o + 0];
+                var g = img.Buffer[o + 1];
+                var r = img.Buffer[o + 2];
+                double dr = Math.Abs(r - rgb[0]) / 255.0;
+                double dg = Math.Abs(g - rgb[1]) / 255.0;
+                double db = Math.Abs(b - rgb[2]) / 255.0;
+                double d = Math.Max(Math.Max(dr, dg), db);
+                return d <= thr;
+            }
+
+            for (int y = ymin; y <= ymax; y++)
+            {
+                for (int x = xmin; x <= xmax; x++)
+                {
+                    int lx = x - xmin;
+                    int ly = y - ymin;
+                    int idx0 = ly * w + lx;
+                    if (visited[idx0]) continue;
+                    if (!IsMatch(x, y)) { visited[idx0] = true; continue; }
+
+                    int head = 0, tail = 0;
+                    qx[tail] = x;
+                    qy[tail] = y;
+                    tail++;
+                    visited[idx0] = true;
+
+                    int count = 0;
+                    long sumX = 0;
+                    long sumY = 0;
+
+                    while (head < tail)
+                    {
+                        int cx = qx[head];
+                        int cy = qy[head];
+                        head++;
+
+                        count++;
+                        if (count > maxCount)
+                        {
+                            count = 0;
+                            break;
+                        }
+                        sumX += cx;
+                        sumY += cy;
+
+                        int nx, ny;
+
+                        nx = cx - 1; ny = cy;
+                        if (nx >= xmin)
+                        {
+                            int li = (ny - ymin) * w + (nx - xmin);
+                            if (!visited[li])
+                            {
+                                visited[li] = true;
+                                if (IsMatch(nx, ny) && tail < qx.Length) { qx[tail] = nx; qy[tail] = ny; tail++; }
+                            }
+                        }
+
+                        nx = cx + 1; ny = cy;
+                        if (nx <= xmax)
+                        {
+                            int li = (ny - ymin) * w + (nx - xmin);
+                            if (!visited[li])
+                            {
+                                visited[li] = true;
+                                if (IsMatch(nx, ny) && tail < qx.Length) { qx[tail] = nx; qy[tail] = ny; tail++; }
+                            }
+                        }
+
+                        nx = cx; ny = cy - 1;
+                        if (ny >= ymin)
+                        {
+                            int li = (ny - ymin) * w + (nx - xmin);
+                            if (!visited[li])
+                            {
+                                visited[li] = true;
+                                if (IsMatch(nx, ny) && tail < qx.Length) { qx[tail] = nx; qy[tail] = ny; tail++; }
+                            }
+                        }
+
+                        nx = cx; ny = cy + 1;
+                        if (ny <= ymax)
+                        {
+                            int li = (ny - ymin) * w + (nx - xmin);
+                            if (!visited[li])
+                            {
+                                visited[li] = true;
+                                if (IsMatch(nx, ny) && tail < qx.Length) { qx[tail] = nx; qy[tail] = ny; tail++; }
+                            }
+                        }
+                    }
+
+                    if (count >= minCount && count > bestCount)
+                    {
+                        bestCount = count;
+                        bx = (int)Math.Round(sumX / (double)count);
+                        by = (int)Math.Round(sumY / (double)count);
+                    }
+                }
+            }
+
+            if (bestCount < minCount) { bx = 0; by = 0; return false; }
+            return true;
+        }
+
         bool Find3Color(ImageData img, int x1, int y1, int x2, int y2,
             int dx1, int dy1, int[] c1, int dx2, int dy2, int[] c2, int dx3, int dy3, int[] c3,
             double sim, out int fx, out int fy)
@@ -675,9 +1112,9 @@ namespace PindleRunner
                 case "ENTER": vk = VirtualKey.RETURN; return true;
                 case "RETURN": vk = VirtualKey.RETURN; return true;
                 case "SPACE": vk = VirtualKey.SPACE; return true;
-                case "CTRL": vk = VirtualKey.LCONTROL; return true;
-                case "CONTROL": vk = VirtualKey.LCONTROL; return true;
-                case "SHIFT": vk = VirtualKey.LSHIFT; return true;
+                case "CTRL": vk = VirtualKey.CONTROL; return true;
+                case "CONTROL": vk = VirtualKey.CONTROL; return true;
+                case "SHIFT": vk = VirtualKey.SHIFT; return true;
                 case "ALT": vk = VirtualKey.MENU; return true;
                 case "WIN": vk = VirtualKey.LWIN; return true;
             }

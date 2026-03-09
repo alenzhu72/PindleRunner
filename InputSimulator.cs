@@ -10,6 +10,8 @@ namespace PindleRunner
         RETURN = 0x0D,
         ESCAPE = 0x1B,
         SPACE = 0x20,
+        SHIFT = 0x10,
+        CONTROL = 0x11,
         LWIN = 0x5B,
         RWIN = 0x5C,
         PRIOR = 0x21,
@@ -66,17 +68,7 @@ namespace PindleRunner
 
         public void KeyPress(VirtualKey key)
         {
-            var down = new INPUT
-            {
-                type = INPUT_KEYBOARD,
-                U = new InputUnion { ki = new KEYBDINPUT { wVk = (ushort)key } }
-            };
-            var up = new INPUT
-            {
-                type = INPUT_KEYBOARD,
-                U = new InputUnion { ki = new KEYBDINPUT { wVk = (ushort)key, dwFlags = KEYEVENTF_KEYUP } }
-            };
-            SendInput(2, new[] { down, up }, Marshal.SizeOf<INPUT>());
+            SendInput(2, new[] { KeyInput(key, false), KeyInput(key, true) }, Marshal.SizeOf<INPUT>());
         }
 
         public void KeyChord(VirtualKey[] modifiers, VirtualKey key)
@@ -84,13 +76,13 @@ namespace PindleRunner
             var inputs = new System.Collections.Generic.List<INPUT>();
             foreach (var m in modifiers)
             {
-                inputs.Add(new INPUT { type = INPUT_KEYBOARD, U = new InputUnion { ki = new KEYBDINPUT { wVk = (ushort)m } } });
+                inputs.Add(KeyInput(m, false));
             }
-            inputs.Add(new INPUT { type = INPUT_KEYBOARD, U = new InputUnion { ki = new KEYBDINPUT { wVk = (ushort)key } } });
-            inputs.Add(new INPUT { type = INPUT_KEYBOARD, U = new InputUnion { ki = new KEYBDINPUT { wVk = (ushort)key, dwFlags = KEYEVENTF_KEYUP } } });
+            inputs.Add(KeyInput(key, false));
+            inputs.Add(KeyInput(key, true));
             for (int i = modifiers.Length - 1; i >= 0; i--)
             {
-                inputs.Add(new INPUT { type = INPUT_KEYBOARD, U = new InputUnion { ki = new KEYBDINPUT { wVk = (ushort)modifiers[i], dwFlags = KEYEVENTF_KEYUP } } });
+                inputs.Add(KeyInput(modifiers[i], true));
             }
             if (inputs.Count > 0)
             {
@@ -100,14 +92,12 @@ namespace PindleRunner
 
         public void KeyDown(VirtualKey key)
         {
-            var down = new INPUT { type = INPUT_KEYBOARD, U = new InputUnion { ki = new KEYBDINPUT { wVk = (ushort)key } } };
-            SendInput(1, new[] { down }, Marshal.SizeOf<INPUT>());
+            SendInput(1, new[] { KeyInput(key, false) }, Marshal.SizeOf<INPUT>());
         }
 
         public void KeyUp(VirtualKey key)
         {
-            var up = new INPUT { type = INPUT_KEYBOARD, U = new InputUnion { ki = new KEYBDINPUT { wVk = (ushort)key, dwFlags = KEYEVENTF_KEYUP } } };
-            SendInput(1, new[] { up }, Marshal.SizeOf<INPUT>());
+            SendInput(1, new[] { KeyInput(key, true) }, Marshal.SizeOf<INPUT>());
         }
 
         public void ClickClient(IntPtr hwnd, int cx, int cy)
@@ -151,6 +141,60 @@ namespace PindleRunner
             SendInput(2, new[] { down, up }, Marshal.SizeOf<INPUT>());
         }
 
+        static INPUT KeyInput(VirtualKey key, bool keyUp)
+        {
+            ushort vk = (ushort)key;
+            uint scan = MapVirtualKey(vk, MAPVK_VK_TO_VSC);
+            if (scan == 0)
+            {
+                scan = vk switch
+                {
+                    0xA0 => 0x2A,
+                    0xA1 => 0x36,
+                    0xA2 => 0x1D,
+                    0xA3 => 0x1D,
+                    0xA4 => 0x38,
+                    0xA5 => 0x38,
+                    _ => 0u
+                };
+            }
+
+            int flags = 0;
+            ushort wVk = vk;
+            ushort wScan = 0;
+            if (scan != 0)
+            {
+                wVk = 0;
+                wScan = (ushort)scan;
+                flags |= KEYEVENTF_SCANCODE;
+                if (IsExtendedKey(vk)) flags |= KEYEVENTF_EXTENDEDKEY;
+            }
+            if (keyUp) flags |= KEYEVENTF_KEYUP;
+
+            return new INPUT
+            {
+                type = INPUT_KEYBOARD,
+                U = new InputUnion { ki = new KEYBDINPUT { wVk = wVk, wScan = wScan, dwFlags = flags } }
+            };
+        }
+
+        static bool IsExtendedKey(ushort vk) => vk switch
+        {
+            0xA3 => true,
+            0xA5 => true,
+            0x25 => true,
+            0x26 => true,
+            0x27 => true,
+            0x28 => true,
+            0x21 => true,
+            0x22 => true,
+            0x23 => true,
+            0x24 => true,
+            0x2D => true,
+            0x2E => true,
+            _ => false
+        };
+
         static void Normalize(ref MOUSEINPUT mi)
         {
             var screenX = GetSystemMetrics(0);
@@ -166,17 +210,23 @@ namespace PindleRunner
         static extern bool ClientToScreen(IntPtr hWnd, ref POINT lpPoint);
 
         [DllImport("user32.dll")]
+        static extern uint MapVirtualKey(uint uCode, uint uMapType);
+
+        [DllImport("user32.dll")]
         static extern int GetSystemMetrics(int nIndex);
 
         const int INPUT_MOUSE = 0;
         const int INPUT_KEYBOARD = 1;
         const int KEYEVENTF_KEYUP = 0x0002;
+        const int KEYEVENTF_EXTENDEDKEY = 0x0001;
+        const int KEYEVENTF_SCANCODE = 0x0008;
         const int MOUSEEVENTF_MOVE = 0x0001;
         const int MOUSEEVENTF_ABSOLUTE = 0x8000;
         const int MOUSEEVENTF_LEFTDOWN = 0x0002;
         const int MOUSEEVENTF_LEFTUP = 0x0004;
         const int MOUSEEVENTF_RIGHTDOWN = 0x0008;
         const int MOUSEEVENTF_RIGHTUP = 0x0010;
+        const uint MAPVK_VK_TO_VSC = 0;
 
         [StructLayout(LayoutKind.Sequential)]
         struct INPUT { public int type; public InputUnion U; }
