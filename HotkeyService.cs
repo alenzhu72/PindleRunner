@@ -15,6 +15,7 @@ namespace PindleRunner
         ImageData? template;
         Thread? thread;
         bool running;
+        uint threadId;
 
         public HotkeyService(WindowManager window, ScreenCapture capture, InputSimulator input, TemplateMatcher matcher)
         {
@@ -30,11 +31,19 @@ namespace PindleRunner
             running = true;
             thread = new Thread(Loop) { IsBackground = true };
             thread.Start();
-            Console.WriteLine("热键: F9取色(Focus窗口相对坐标)/F10记录坐标/Ctrl+Shift+Z清空/Ctrl+Shift+X执行/F11截128x128模板(鼠标为左上角)保存到根目录/template.bmp/F12加载template.bmp搜索并点击/Ctrl+Shift+C运行脚本");
+            Console.WriteLine("热键: F9取色(Focus窗口相对坐标)/F10记录坐标/Ctrl+Shift+Z清空/Ctrl+Shift+X执行/F11截64x64模板(鼠标为左上角)保存到根目录/template.bmp与template.tmp/F12加载模板搜索并点击/Ctrl+Shift+C运行脚本");
+        }
+
+        public void Stop()
+        {
+            if (!running) return;
+            running = false;
+            if (threadId != 0) PostThreadMessage(threadId, WM_QUIT, IntPtr.Zero, IntPtr.Zero);
         }
 
         void Loop()
         {
+            threadId = GetCurrentThreadId();
             RegisterHotKey(IntPtr.Zero, 1, 0, (int)VirtualKey.F9);
             RegisterHotKey(IntPtr.Zero, 2, 0, (int)VirtualKey.F10);
             RegisterHotKey(IntPtr.Zero, 3, MOD_CONTROL | MOD_SHIFT, VK_Z);
@@ -61,6 +70,7 @@ namespace PindleRunner
             UnregisterHotKey(IntPtr.Zero, 5);
             UnregisterHotKey(IntPtr.Zero, 6);
             UnregisterHotKey(IntPtr.Zero, 7);
+            threadId = 0;
         }
 
         void HandleHotkey(int id)
@@ -113,17 +123,18 @@ namespace PindleRunner
                 }
                 case 5:
                 {
-                    int size = 128;
+                    int size = 64;
                     int left = Math.Max(rect.X, p.X);
                     int top = Math.Max(rect.Y, p.Y);
                     left = Math.Min(left, rect.X + rect.Width - size);
                     top = Math.Min(top, rect.Y + rect.Height - size);
                     var tplRect = new RectI(left, top, size, size);
                     template = capture.Capture(tplRect);
-                    var path = System.IO.Path.Combine(AppContext.BaseDirectory, "template.bmp");
-                    if (BmpLoader.SaveBmp(path, template.Value))
+                    var pathBmp = System.IO.Path.Combine(AppContext.BaseDirectory, "template.bmp");
+                    var pathTmp = System.IO.Path.Combine(AppContext.BaseDirectory, "template.tmp");
+                    if (BmpLoader.SaveBmp(pathBmp, template.Value) && BmpLoader.SaveBmp(pathTmp, template.Value))
                     {
-                        Console.WriteLine($"已截模板 {size}x{size} 于 ({left},{top}) 并保存到 {path}");
+                        Console.WriteLine($"已截模板 {size}x{size} 于 ({left},{top}) 并保存到 {pathBmp} / {pathTmp}");
                     }
                     else
                     {
@@ -133,23 +144,29 @@ namespace PindleRunner
                 }
                 case 6:
                 {
-                    var path = System.IO.Path.Combine(AppContext.BaseDirectory, "template.bmp");
-                    if (!BmpLoader.LoadBmp(path, out var tpl))
+                    var pathBmp = System.IO.Path.Combine(AppContext.BaseDirectory, "template.bmp");
+                    var pathTmp = System.IO.Path.Combine(AppContext.BaseDirectory, "template.tmp");
+                    ImageData tpl;
+                    string usedPath;
+                    if (BmpLoader.LoadBmp(pathBmp, out tpl)) usedPath = pathBmp;
+                    else if (BmpLoader.LoadBmp(pathTmp, out tpl)) usedPath = pathTmp;
+                    else
                     {
-                        Console.WriteLine($"未找到或无法加载模板文件: {path}");
+                        Console.WriteLine($"未找到或无法加载模板文件: {pathBmp} 或 {pathTmp}");
                         break;
                     }
                     var search = new RectI(0, 0, rect.Width, rect.Height);
-                    if (matcher.Find(img, tpl, search, 0.75, out var hit))
+                    var ok = matcher.Find(img, tpl, search, 0.75, out var hit, out var best);
+                    if (ok)
                     {
                         input.MoveClient(window.HWnd, hit.X + tpl.Width / 2, hit.Y + tpl.Height / 2);
                         Thread.Sleep(200);
                         input.ClickClient(window.HWnd, hit.X + tpl.Width / 2, hit.Y + tpl.Height / 2);
-                        Console.WriteLine($"模板命中于 ({hit.X},{hit.Y}) 并已点击");
+                        Console.WriteLine($"模板({System.IO.Path.GetFileName(usedPath)})命中于 ({hit.X},{hit.Y}) score={best} 并已点击");
                     }
                     else
                     {
-                        Console.WriteLine("模板未命中");
+                        Console.WriteLine($"模板未命中 best={best}");
                     }
                     break;
                 }
@@ -172,11 +189,18 @@ namespace PindleRunner
         }
 
         const int WM_HOTKEY = 0x0312;
+        const uint WM_QUIT = 0x0012;
         const int MOD_CONTROL = 0x0002;
         const int MOD_SHIFT = 0x0004;
         const int VK_Z = 0x5A;
         const int VK_X = 0x58;
         const int VK_C = 0x43;
+
+        [DllImport("kernel32.dll")]
+        static extern uint GetCurrentThreadId();
+
+        [DllImport("user32.dll")]
+        static extern bool PostThreadMessage(uint idThread, uint Msg, IntPtr wParam, IntPtr lParam);
 
         [DllImport("user32.dll")]
         static extern bool RegisterHotKey(IntPtr hWnd, int id, int fsModifiers, int vk);

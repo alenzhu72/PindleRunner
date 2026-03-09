@@ -27,7 +27,16 @@ namespace PindleRunner
             var hotkeys = new HotkeyService(window, screen, input, matcher);
             hotkeys.Start();
 
-            while (true)
+            bool exitRequested = false;
+            Console.CancelKeyPress += (_, e) =>
+            {
+                e.Cancel = true;
+                exitRequested = true;
+                hotkeys.Stop();
+                Console.WriteLine("已请求退出");
+            };
+
+            while (!exitRequested)
             {
                 if (!window.Activate())
                 {

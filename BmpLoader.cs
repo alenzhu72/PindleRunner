@@ -9,27 +9,53 @@ namespace PindleRunner
         public static bool LoadBmp(string path, out ImageData img)
         {
             img = default;
-            IntPtr hBitmap = LoadImage(IntPtr.Zero, path, 0, 0, 0, 0x0010 | 0x0010000);
-            if (hBitmap == IntPtr.Zero) return false;
-            BITMAP bm = new BITMAP();
-            GetObject(hBitmap, Marshal.SizeOf<BITMAP>(), ref bm);
-            var width = bm.bmWidth;
-            var height = bm.bmHeight;
-            var hdc = GetDC(IntPtr.Zero);
-            var info = new BITMAPINFO();
-            info.bmiHeader.biSize = (uint)Marshal.SizeOf<BITMAPINFOHEADER>();
-            info.bmiHeader.biWidth = width;
-            info.bmiHeader.biHeight = -height;
-            info.bmiHeader.biPlanes = 1;
-            info.bmiHeader.biBitCount = 32;
-            info.bmiHeader.biCompression = 0;
-            var stride = width * 4;
-            var buffer = new byte[stride * height];
-            GetDIBits(hdc, hBitmap, 0, (uint)height, buffer, ref info, 0);
-            ReleaseDC(IntPtr.Zero, hdc);
-            DeleteObject(hBitmap);
-            img = new ImageData(width, height, stride, buffer);
-            return true;
+            try
+            {
+                var fullPath = path;
+                if (!Path.IsPathRooted(fullPath))
+                    fullPath = Path.Combine(AppContext.BaseDirectory, fullPath);
+                using var fs = File.OpenRead(fullPath);
+                using var br = new BinaryReader(fs);
+                if (br.ReadUInt16() != 0x4D42) return false;
+                br.ReadUInt32();
+                br.ReadUInt16();
+                br.ReadUInt16();
+                uint offBits = br.ReadUInt32();
+                uint biSize = br.ReadUInt32();
+                if (biSize < 40) return false;
+                int width = br.ReadInt32();
+                int height = br.ReadInt32();
+                ushort planes = br.ReadUInt16();
+                ushort bpp = br.ReadUInt16();
+                uint compression = br.ReadUInt32();
+                br.ReadUInt32();
+                br.ReadInt32();
+                br.ReadInt32();
+                br.ReadUInt32();
+                br.ReadUInt32();
+                if (planes != 1 || bpp != 32 || compression != 0) return false;
+                bool topDown = height < 0;
+                int absHeight = Math.Abs(height);
+                int stride = width * 4;
+                fs.Seek(offBits, SeekOrigin.Begin);
+                var buffer = br.ReadBytes(stride * absHeight);
+                if (buffer.Length != stride * absHeight) return false;
+                if (!topDown)
+                {
+                    var flipped = new byte[buffer.Length];
+                    for (int y = 0; y < absHeight; y++)
+                    {
+                        Buffer.BlockCopy(buffer, y * stride, flipped, (absHeight - 1 - y) * stride, stride);
+                    }
+                    buffer = flipped;
+                }
+                img = new ImageData(width, absHeight, stride, buffer);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         public static bool SaveBmp(string path, ImageData img)

@@ -65,6 +65,52 @@ namespace PindleRunner
             doStack.Clear();
             forStack.Clear();
             vars.Clear();
+            var cleaned = new List<string>(lines.Length);
+            bool inBlock = false;
+            foreach (var rawLine in lines)
+            {
+                var line = rawLine;
+                int pos = 0;
+                var sb = new System.Text.StringBuilder();
+                while (pos < line.Length)
+                {
+                    if (!inBlock)
+                    {
+                        int idxBlockStart = line.IndexOf("/*", pos, StringComparison.Ordinal);
+                        int idxLineComment = line.IndexOf("//", pos, StringComparison.Ordinal);
+                        if (idxLineComment >= 0 && (idxBlockStart < 0 || idxLineComment < idxBlockStart))
+                        {
+                            sb.Append(line.AsSpan(pos, idxLineComment - pos));
+                            break;
+                        }
+                        if (idxBlockStart >= 0)
+                        {
+                            sb.Append(line.AsSpan(pos, idxBlockStart - pos));
+                            pos = idxBlockStart + 2;
+                            inBlock = true;
+                            continue;
+                        }
+                        sb.Append(line.AsSpan(pos));
+                        break;
+                    }
+                    else
+                    {
+                        int idxBlockEnd = line.IndexOf("*/", pos, StringComparison.Ordinal);
+                        if (idxBlockEnd >= 0)
+                        {
+                            pos = idxBlockEnd + 2;
+                            inBlock = false;
+                        }
+                        else
+                        {
+                            pos = line.Length;
+                            break;
+                        }
+                    }
+                }
+                cleaned.Add(sb.ToString().Trim());
+            }
+            lines = cleaned.ToArray();
             // First pass: scan labels
             for (int i = 0; i < lines.Length; i++)
             {
@@ -147,6 +193,35 @@ namespace PindleRunner
                 if (TryKey(key, out var vk)) input.KeyPress(vk);
                 return null;
             }
+            if (t[0].Equals("PRINT", StringComparison.OrdinalIgnoreCase) && t.Length >= 2)
+            {
+                if (t.Length == 2)
+                {
+                    var s = t[1];
+                    if (s.Length >= 2 && s[0] == '"' && s[^1] == '"')
+                    {
+                        Console.WriteLine(s.Substring(1, s.Length - 2));
+                    }
+                    else
+                    {
+                        Console.WriteLine(Eval(s).ToString(CultureInfo.InvariantCulture));
+                    }
+                }
+                else
+                {
+                    var parts = new List<string>();
+                    for (int i = 1; i < t.Length; i++)
+                    {
+                        var s = t[i];
+                        if (s.Length >= 2 && s[0] == '"' && s[^1] == '"')
+                            parts.Add(s.Substring(1, s.Length - 2));
+                        else
+                            parts.Add(Eval(s).ToString(CultureInfo.InvariantCulture));
+                    }
+                    Console.WriteLine(string.Join("", parts));
+                }
+                return null;
+            }
             
             if (t[0].Equals("DELAY", StringComparison.OrdinalIgnoreCase) && t.Length >= 2)
             {
@@ -219,19 +294,76 @@ namespace PindleRunner
                 
                 var img = capture.Capture(rect);
                 var search = new RectI(x1, y1, x2 - x1, y2 - y1);
+                Console.WriteLine($"[DEBUG] FINDPIC searching area=({x1},{y1})-({x2},{y2}) tpl={tpl.Width}x{tpl.Height} thr={sim.ToString(CultureInfo.InvariantCulture)}");
                 
-                if (matcher.Find(img, tpl, search, sim, out var hit))
+                var ok = matcher.Find(img, tpl, search, sim, out var hit, out var best);
+                if (ok)
                 {
                     vars[outX] = hit.X;
                     vars[outY] = hit.Y;
                     vars["FOUND"] = 1;
-                    Console.WriteLine($"[DEBUG] FINDPIC {Path.GetFileName(path)}: Found ({hit.X},{hit.Y}) -> {outX},{outY}");
+                    Console.WriteLine($"[DEBUG] FINDPIC {Path.GetFileName(path)}: Found ({hit.X},{hit.Y}) score={best.ToString(CultureInfo.InvariantCulture)} -> {outX},{outY}");
                 }
                 else
                 {
                     vars["FOUND"] = 0;
-                    Console.WriteLine($"[DEBUG] FINDPIC {Path.GetFileName(path)}: Not Found");
+                    Console.WriteLine($"[DEBUG] FINDPIC {Path.GetFileName(path)}: Not Found best={best.ToString(CultureInfo.InvariantCulture)}");
                 }
+                return null;
+            }
+
+            if (t[0].Equals("FIND3COLOR", StringComparison.OrdinalIgnoreCase) && t.Length >= 15)
+            {
+                if (!window.GetClientRect(out var rect)) return null;
+                int x1 = (int)Eval(t[1]);
+                int y1 = (int)Eval(t[2]);
+                int x2 = (int)Eval(t[3]);
+                int y2 = (int)Eval(t[4]);
+
+                int dx1 = (int)Eval(t[5]);
+                int dy1 = (int)Eval(t[6]);
+                var c1 = ParseHex(t[7].Trim('"', '#'));
+
+                int dx2 = (int)Eval(t[8]);
+                int dy2 = (int)Eval(t[9]);
+                var c2 = ParseHex(t[10].Trim('"', '#'));
+
+                int dx3 = (int)Eval(t[11]);
+                int dy3 = (int)Eval(t[12]);
+                var c3 = ParseHex(t[13].Trim('"', '#'));
+
+                double sim = double.Parse(t[14], CultureInfo.InvariantCulture);
+                string outX = "X", outY = "Y";
+                if (t.Length >= 17)
+                {
+                    int idx = 15;
+                    if (t[idx].Equals("OUT", StringComparison.OrdinalIgnoreCase) || t[idx].Equals("输出", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (idx + 1 < t.Length) { outX = t[idx + 1]; idx += 2; }
+                    }
+                    else
+                    {
+                        outX = t[idx]; idx += 1;
+                    }
+                    if (idx < t.Length)
+                    {
+                        if (t[idx].Equals("OUT", StringComparison.OrdinalIgnoreCase) || t[idx].Equals("输出", StringComparison.OrdinalIgnoreCase))
+                        {
+                            if (idx + 1 < t.Length) outY = t[idx + 1];
+                        }
+                        else
+                        {
+                            outY = t[idx];
+                        }
+                    }
+                }
+
+                var img = capture.Capture(rect);
+                var found = Find3Color(img, x1, y1, x2, y2, dx1, dy1, c1, dx2, dy2, c2, dx3, dy3, c3, sim, out var fx, out var fy);
+                vars[outX] = fx;
+                vars[outY] = fy;
+                vars["FOUND"] = found ? 1 : 0;
+                Console.WriteLine($"[DEBUG] FIND3COLOR Found={found} ({fx},{fy}) -> {outX},{outY}");
                 return null;
             }
             
@@ -374,7 +506,39 @@ namespace PindleRunner
         {
             if (double.TryParse(token, NumberStyles.Any, CultureInfo.InvariantCulture, out var v)) return v;
             if (vars.TryGetValue(token, out var vv)) return vv;
+            int idx = FindOp(token);
+            if (idx > 0 && idx + 1 < token.Length)
+            {
+                char op = token[idx];
+                var a = token.Substring(0, idx).Trim();
+                var b = token.Substring(idx + 1).Trim();
+                double av = Eval(a);
+                double bv = Eval(b);
+                return op switch
+                {
+                    '+' => av + bv,
+                    '-' => av - bv,
+                    '*' => av * bv,
+                    '/' => (Math.Abs(bv) < 1e-12 ? 0 : av / bv),
+                    _ => 0
+                };
+            }
             return 0;
+        }
+
+        int FindOp(string s)
+        {
+            int best = -1;
+            for (int i = 1; i < s.Length; i++)
+            {
+                char c = s[i];
+                if (c == '+' || c == '-' || c == '*' || c == '/')
+                {
+                    best = i;
+                    break;
+                }
+            }
+            return best;
         }
 
         bool EvalCond(string[] parts)
@@ -437,6 +601,45 @@ namespace PindleRunner
                 }
             }
             return false;
+        }
+
+        bool Find3Color(ImageData img, int x1, int y1, int x2, int y2,
+            int dx1, int dy1, int[] c1, int dx2, int dy2, int[] c2, int dx3, int dy3, int[] c3,
+            double sim, out int fx, out int fy)
+        {
+            fx = 0; fy = 0;
+            int xmin = Math.Max(0, Math.Min(x1, x2));
+            int xmax = Math.Min(img.Width - 1, Math.Max(x1, x2));
+            int ymin = Math.Max(0, Math.Min(y1, y2));
+            int ymax = Math.Min(img.Height - 1, Math.Max(y1, y2));
+            double thr = 1.0 - sim;
+
+            for (int y = ymin; y <= ymax; y++)
+            {
+                for (int x = xmin; x <= xmax; x++)
+                {
+                    if (!MatchAt(img, x + dx1, y + dy1, c1, thr)) continue;
+                    if (!MatchAt(img, x + dx2, y + dy2, c2, thr)) continue;
+                    if (!MatchAt(img, x + dx3, y + dy3, c3, thr)) continue;
+                    fx = x; fy = y;
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        bool MatchAt(ImageData img, int x, int y, int[] rgb, double thr)
+        {
+            if (x < 0 || y < 0 || x >= img.Width || y >= img.Height) return false;
+            var o = y * img.Stride + x * 4;
+            var b = img.Buffer[o + 0];
+            var g = img.Buffer[o + 1];
+            var r = img.Buffer[o + 2];
+            double dr = Math.Abs(r - rgb[0]) / 255.0;
+            double dg = Math.Abs(g - rgb[1]) / 255.0;
+            double db = Math.Abs(b - rgb[2]) / 255.0;
+            double d = Math.Max(Math.Max(dr, dg), db);
+            return d <= thr;
         }
 
         bool TryKey(string key, out VirtualKey vk)
