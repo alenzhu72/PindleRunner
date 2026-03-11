@@ -1049,6 +1049,50 @@ namespace PindleRunner
                                 if (IsMatch(nx, ny) && tail < qx.Length) { qx[tail] = nx; qy[tail] = ny; tail++; }
                             }
                         }
+
+                        nx = cx - 1; ny = cy - 1;
+                        if (nx >= xmin && ny >= ymin)
+                        {
+                            int li = (ny - ymin) * w + (nx - xmin);
+                            if (!visited[li])
+                            {
+                                visited[li] = true;
+                                if (IsMatch(nx, ny) && tail < qx.Length) { qx[tail] = nx; qy[tail] = ny; tail++; }
+                            }
+                        }
+
+                        nx = cx + 1; ny = cy - 1;
+                        if (nx <= xmax && ny >= ymin)
+                        {
+                            int li = (ny - ymin) * w + (nx - xmin);
+                            if (!visited[li])
+                            {
+                                visited[li] = true;
+                                if (IsMatch(nx, ny) && tail < qx.Length) { qx[tail] = nx; qy[tail] = ny; tail++; }
+                            }
+                        }
+
+                        nx = cx - 1; ny = cy + 1;
+                        if (nx >= xmin && ny <= ymax)
+                        {
+                            int li = (ny - ymin) * w + (nx - xmin);
+                            if (!visited[li])
+                            {
+                                visited[li] = true;
+                                if (IsMatch(nx, ny) && tail < qx.Length) { qx[tail] = nx; qy[tail] = ny; tail++; }
+                            }
+                        }
+
+                        nx = cx + 1; ny = cy + 1;
+                        if (nx <= xmax && ny <= ymax)
+                        {
+                            int li = (ny - ymin) * w + (nx - xmin);
+                            if (!visited[li])
+                            {
+                                visited[li] = true;
+                                if (IsMatch(nx, ny) && tail < qx.Length) { qx[tail] = nx; qy[tail] = ny; tail++; }
+                            }
+                        }
                     }
 
                     if (count >= minCount && count > bestCount)
