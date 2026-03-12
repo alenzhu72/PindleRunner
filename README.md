@@ -33,23 +33,7 @@
 - `BmpLoader.cs`: 极简 BMP 加载器，支持内存像素比对。
 - `TemplateMatcher.cs`: 核心找图算法逻辑。
           
-已支持按住+抬起模式，并且脚本可以组合使用。
 
-**新增指令**
-- KEYDOWN "CTRL"
-- KEYUP "CTRL"
-- 可以和任何支持的键一起用：CTRL/SHIFT/ALT/WIN/字母数字/F1–F12/方向键等
-
-### 5.2 按住 CTRL 拖拽后抬起
-```
-KEYDOWN "CTRL"
-MOVE TO 500,400
-LEFTCLICK 1
-DELAY 300
-MOVE TO 700,450
-LEFTCLICK 1
-KEYUP "CTRL"
-```
 
 ## 📘 新增指令详解（参数 + 示例）
 
