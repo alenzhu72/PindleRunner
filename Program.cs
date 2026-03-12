@@ -68,6 +68,11 @@ namespace PindleRunner
             {
                 while (!exitRequested)
                 {
+                    if (!hotkeys.IsRunning)
+                    {
+                        Thread.Sleep(200);
+                        continue;
+                    }
                     if (!window.Activate())
                     {
                         Console.WriteLine("未找到目标窗口");

@@ -16,6 +16,9 @@ namespace PindleRunner
         readonly Stack<int> doStack = new();
         readonly Stack<ForFrame> forStack = new();
         readonly Dictionary<string, double> vars = new(StringComparer.OrdinalIgnoreCase);
+        string? watchdogKey;
+        int watchdogStreak;
+        const int DefaultWatchdogThreshold = 100;
 
         struct ForFrame
         {
@@ -65,6 +68,8 @@ namespace PindleRunner
             doStack.Clear();
             forStack.Clear();
             vars.Clear();
+            watchdogKey = null;
+            watchdogStreak = 0;
             var cleaned = new List<string>(lines.Length);
             bool inBlock = false;
             foreach (var rawLine in lines)
@@ -156,6 +161,24 @@ namespace PindleRunner
             {
                 Console.WriteLine("[DEBUG] END");
                 return int.MaxValue;
+            }
+
+            if ((t[0].Equals("WINDOW", StringComparison.OrdinalIgnoreCase) ||
+                 t[0].Equals("TARGETWINDOW", StringComparison.OrdinalIgnoreCase) ||
+                 t[0].Equals("SETWINDOW", StringComparison.OrdinalIgnoreCase)) && t.Length >= 2)
+            {
+                var keyword = string.Join(" ", t, 1, t.Length - 1).Trim();
+                if (keyword.Length >= 2 && keyword[0] == '"' && keyword[^1] == '"')
+                {
+                    keyword = keyword.Substring(1, keyword.Length - 2);
+                }
+                window.SetTitleKeyword(keyword);
+                watchdogKey = null;
+                watchdogStreak = 0;
+                bool ok = window.Activate();
+                vars["FOUND"] = ok ? 1 : 0;
+                Console.WriteLine($"[DEBUG] WINDOW \"{keyword}\" -> Found={ok}");
+                return null;
             }
 
             if (t[0].Equals("MOVE", StringComparison.OrdinalIgnoreCase) && t.Length >= 4 && t[1].Equals("TO", StringComparison.OrdinalIgnoreCase))
@@ -342,8 +365,9 @@ namespace PindleRunner
                 vars[outX] = fx;
                 vars[outY] = fy;
                 vars["FOUND"] = found ? 1 : 0;
-                
+
                 Console.WriteLine($"[DEBUG] FINDCOLOR {hex}: Found={found} ({fx},{fy}) -> {outX},{outY}");
+                TrackWatchdog($"FINDCOLOR:{hex}:{x1},{y1},{x2},{y2}", found, hex);
                 return null;
             }
 
@@ -730,6 +754,51 @@ namespace PindleRunner
             // Fallback for unrecognized commands
             Console.WriteLine($"[WARNING] 未知指令或参数格式错误: {string.Join(" ", t)}");
             return null;
+        }
+
+        void TrackWatchdog(string key, bool found, string hex)
+        {
+            if (!hex.Equals("008400", StringComparison.OrdinalIgnoreCase))
+            {
+                watchdogKey = null;
+                watchdogStreak = 0;
+                return;
+            }
+
+            int threshold = DefaultWatchdogThreshold;
+            if (vars.TryGetValue("WATCHDOG", out var wdv))
+            {
+                threshold = (int)Math.Round(wdv);
+                if (threshold <= 0)
+                {
+                    watchdogKey = null;
+                    watchdogStreak = 0;
+                    return;
+                }
+                if (threshold > 1000000) threshold = 1000000;
+            }
+
+            if (found)
+            {
+                watchdogKey = null;
+                watchdogStreak = 0;
+                return;
+            }
+
+            if (watchdogKey != null && watchdogKey.Equals(key, StringComparison.Ordinal))
+            {
+                watchdogStreak++;
+            }
+            else
+            {
+                watchdogKey = key;
+                watchdogStreak = 1;
+            }
+
+            if (watchdogStreak >= threshold)
+            {
+                throw new ScriptRestartException($"Watchdog触发：{key} 连续未找到 {watchdogStreak} 次(阈值={threshold})，自动重启脚本");
+            }
         }
 
         string[] Tokenize(string line)
@@ -1198,5 +1267,10 @@ namespace PindleRunner
         [System.Runtime.InteropServices.DllImport("user32.dll")]
         static extern bool GetCursorPos(out POINT lpPoint);
         struct POINT { public int X; public int Y; }
+    }
+
+    public sealed class ScriptRestartException : Exception
+    {
+        public ScriptRestartException(string message) : base(message) { }
     }
 }

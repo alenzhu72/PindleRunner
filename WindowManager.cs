@@ -8,16 +8,21 @@ namespace PindleRunner
     public sealed class WindowManager
     {
         public IntPtr HWnd { get; private set; }
-        readonly string titleKeyword;
+        public string TitleKeyword { get; private set; }
 
         public WindowManager(string titleKeyword)
         {
-            this.titleKeyword = titleKeyword;
+            TitleKeyword = titleKeyword;
+        }
+
+        public void SetTitleKeyword(string titleKeyword)
+        {
+            TitleKeyword = titleKeyword ?? string.Empty;
         }
 
         public bool Activate()
         {
-            HWnd = FindWindowByPartialTitle(titleKeyword);
+            HWnd = FindWindowByPartialTitle(TitleKeyword);
             if (HWnd == IntPtr.Zero) return false;
             SetForegroundWindow(HWnd);
             return true;

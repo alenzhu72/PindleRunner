@@ -22,7 +22,10 @@ namespace PindleRunner
         bool running;
         uint threadId;
         CancellationTokenSource? scriptCts;
+        readonly object scriptLock = new();
         MagnifierController? magnifier;
+
+        public bool IsRunning => running;
 
         public HotkeyService(WindowManager window, ScreenCapture capture, InputSimulator input, TemplateMatcher matcher)
         {
@@ -38,7 +41,7 @@ namespace PindleRunner
             running = true;
             thread = new Thread(Loop) { IsBackground = true };
             thread.Start();
-            Console.WriteLine("热键: F9取色(Focus窗口相对坐标)/F10局部放大镜(鼠标附近)/Ctrl+Shift+X执行/F11截64x64模板(鼠标为左上角)保存到根目录/template.bmp与template.tmp/Ctrl+Shift+Z终止程序(退回命令行)/Ctrl+Shift+C运行脚本");
+            Console.WriteLine("热键: F9取色(Focus窗口相对坐标)/F10局部放大镜(鼠标附近)/Ctrl+Shift+X执行/F11截64x64模板(鼠标为左上角)保存到根目录/template.bmp与template.tmp/Ctrl+Shift+Z停止脚本(保留热键与控制台窗口)/Ctrl+Shift+C运行脚本");
         }
 
         public void Stop()
@@ -90,11 +93,23 @@ namespace PindleRunner
 
         void HandleHotkey(int id)
         {
+            if (id == 6)
+            {
+                StopScript();
+                return;
+            }
+
+            if (id == 7)
+            {
+                StartScript(false, null);
+                return;
+            }
+
             if (!window.Activate()) return;
             if (!window.GetClientRect(out var rect)) return;
             POINT p;
             GetCursorPos(out p);
-            
+
             switch (id)
             {
                 case 1:
@@ -104,11 +119,14 @@ namespace PindleRunner
                     {
                         int rx = p.X - rect.X;
                         int ry = p.Y - rect.Y;
-                        var o = ry * img.Stride + rx * 4;
-                        var b = img.Buffer[o + 0];
-                        var g = img.Buffer[o + 1];
-                        var r = img.Buffer[o + 2];
+                        GetPixel(img, rx, ry, out var r, out var g, out var b);
                         Console.WriteLine($"相对坐标=({rx},{ry}) 颜色=#{r:X2}{g:X2}{b:X2}");
+
+                        var ok = TryFindMostDistinctPixel(img, rx, ry, 6, out var bx, out var by, out var br, out var bg, out var bb);
+                        if (ok)
+                        {
+                            Console.WriteLine($"近邻最佳坐标=({bx},{by}) 颜色=#{br:X2}{bg:X2}{bb:X2}");
+                        }
                     }
                     break;
                 }
@@ -155,43 +173,152 @@ namespace PindleRunner
                     }
                     break;
                 }
-                case 6:
+            }
+        }
+
+        void StopScript()
+        {
+            lock (scriptLock)
+            {
+                if (scriptCts == null)
                 {
-                    Console.WriteLine("已请求终止程序");
-                    scriptCts?.Cancel();
-                    magnifier?.Dispose();
-                    Stop();
-                    Environment.Exit(0);
+                    Console.WriteLine("脚本未在运行");
                     return;
                 }
-                case 7:
+                Console.WriteLine("已请求停止脚本（热键仍可用，可 Ctrl+Shift+C 重新启动）");
+                scriptCts.Cancel();
+            }
+        }
+
+        static void GetPixel(ImageData img, int x, int y, out byte r, out byte g, out byte b)
+        {
+            var o = y * img.Stride + x * 4;
+            b = img.Buffer[o + 0];
+            g = img.Buffer[o + 1];
+            r = img.Buffer[o + 2];
+        }
+
+        static bool TryFindMostDistinctPixel(ImageData img, int cx, int cy, int radius, out int bx, out int by, out byte br, out byte bg, out byte bb)
+        {
+            int x1 = cx - radius;
+            int y1 = cy - radius;
+            int x2 = cx + radius;
+            int y2 = cy + radius;
+            if (x2 < 0 || y2 < 0 || x1 >= img.Width || y1 >= img.Height)
+            {
+                bx = by = 0;
+                br = bg = bb = 0;
+                return false;
+            }
+
+            if (x1 < 0) x1 = 0;
+            if (y1 < 0) y1 = 0;
+            if (x2 >= img.Width) x2 = img.Width - 1;
+            if (y2 >= img.Height) y2 = img.Height - 1;
+
+            long sumR = 0, sumG = 0, sumB = 0;
+            int n = 0;
+            for (int y = y1; y <= y2; y++)
+            {
+                int row = y * img.Stride;
+                for (int x = x1; x <= x2; x++)
                 {
-                    scriptCts?.Cancel();
-                    scriptCts?.Dispose();
-                    scriptCts = new CancellationTokenSource();
-                    var token = scriptCts.Token;
-                    var path = System.IO.Path.Combine(AppContext.BaseDirectory, "script.vb");
-                    if (System.IO.File.Exists(path))
+                    int o = row + x * 4;
+                    sumB += img.Buffer[o + 0];
+                    sumG += img.Buffer[o + 1];
+                    sumR += img.Buffer[o + 2];
+                    n++;
+                }
+            }
+            if (n <= 0)
+            {
+                bx = by = 0;
+                br = bg = bb = 0;
+                return false;
+            }
+
+            int meanR = (int)(sumR / n);
+            int meanG = (int)(sumG / n);
+            int meanB = (int)(sumB / n);
+
+            int bestScore = -1;
+            bx = cx; by = cy;
+            br = bg = bb = 0;
+
+            for (int y = y1; y <= y2; y++)
+            {
+                int row = y * img.Stride;
+                for (int x = x1; x <= x2; x++)
+                {
+                    int o = row + x * 4;
+                    int pb = img.Buffer[o + 0];
+                    int pg = img.Buffer[o + 1];
+                    int pr = img.Buffer[o + 2];
+                    int dr = pr - meanR;
+                    int dg = pg - meanG;
+                    int db = pb - meanB;
+                    int score = dr * dr + dg * dg + db * db;
+                    if (score > bestScore)
+                    {
+                        bestScore = score;
+                        bx = x;
+                        by = y;
+                        br = (byte)pr;
+                        bg = (byte)pg;
+                        bb = (byte)pb;
+                    }
+                }
+            }
+
+            return bestScore > 0;
+        }
+
+        void StartScript(bool autoRestart, string? reason)
+        {
+            if (!running) return;
+            lock (scriptLock)
+            {
+                if (autoRestart && !string.IsNullOrWhiteSpace(reason))
+                {
+                    Console.WriteLine($"[WARNING] {reason}");
+                }
+
+                scriptCts?.Cancel();
+                scriptCts?.Dispose();
+                scriptCts = new CancellationTokenSource();
+                var token = scriptCts.Token;
+
+                var path = System.IO.Path.Combine(AppContext.BaseDirectory, "script.vb");
+                if (!System.IO.File.Exists(path))
+                {
+                    Console.WriteLine($"未找到脚本文件: {path}");
+                    return;
+                }
+
+                if (!window.Activate())
+                {
+                    Console.WriteLine($"[WARNING] 未找到目标窗口(当前关键字=\"{window.TitleKeyword}\")，脚本仍会启动；可在脚本里用 WINDOW 指令切换目标窗口");
+                }
+
+                Task.Run(() =>
+                {
+                    try
                     {
                         var engine = new ScriptEngine(window, capture, input, matcher);
-                        Task.Run(() => 
-                        {
-                            try
-                            {
-                                engine.RunFile(path, token);
-                            }
-                            catch (Exception ex)
-                            {
-                                Console.WriteLine($"脚本异常: {ex.Message}");
-                            }
-                        }, token);
+                        engine.RunFile(path, token);
                     }
-                    else
+                    catch (ScriptRestartException ex)
                     {
-                        Console.WriteLine($"未找到脚本文件: {path}");
+                        if (token.IsCancellationRequested) return;
+                        if (!running) return;
+                        StartScript(true, ex.Message);
                     }
-                    break;
-                }
+                    catch (Exception ex)
+                    {
+                        if (token.IsCancellationRequested) return;
+                        Console.WriteLine($"脚本异常: {ex.Message}");
+                    }
+                }, token);
             }
         }
 
@@ -315,7 +442,11 @@ namespace PindleRunner
             readonly ScreenCapture capture;
             readonly System.Windows.Forms.Timer timer;
             readonly PictureBox box;
+            readonly int src;
+            readonly int scale;
             Bitmap? lastBitmap;
+            int lastLeft;
+            int lastTop;
 
             protected override bool ShowWithoutActivation => true;
 
@@ -323,8 +454,8 @@ namespace PindleRunner
             {
                 this.capture = capture;
 
-                int src = 48;
-                int scale = 4;
+                src = 32;
+                scale = 10;
                 int dst = src * scale;
 
                 AutoScaleMode = AutoScaleMode.None;
@@ -342,10 +473,20 @@ namespace PindleRunner
                     Dock = DockStyle.Fill,
                     SizeMode = PictureBoxSizeMode.Normal
                 };
+                box.MouseDown += (_, e) =>
+                {
+                    int sx = e.X / scale;
+                    int sy = e.Y / scale;
+                    if (sx < 0) sx = 0;
+                    if (sy < 0) sy = 0;
+                    if (sx >= src) sx = src - 1;
+                    if (sy >= src) sy = src - 1;
+                    SetCursorPos(lastLeft + sx, lastTop + sy);
+                };
                 Controls.Add(box);
 
                 timer = new System.Windows.Forms.Timer { Interval = 33 };
-                timer.Tick += (_, __) => SafeUpdateFrame(src, scale);
+                timer.Tick += (_, __) => SafeUpdateFrame();
 
                 Shown += (_, __) => timer.Start();
                 VisibleChanged += (_, __) =>
@@ -362,11 +503,11 @@ namespace PindleRunner
                 Hide();
             }
 
-            void SafeUpdateFrame(int src, int scale)
+            void SafeUpdateFrame()
             {
                 try
                 {
-                    UpdateFrame(src, scale);
+                    UpdateFrame();
                 }
                 catch (Exception ex)
                 {
@@ -376,7 +517,7 @@ namespace PindleRunner
                 }
             }
 
-            void UpdateFrame(int src, int scale)
+            void UpdateFrame()
             {
                 if (!Visible) return;
 
@@ -389,6 +530,8 @@ namespace PindleRunner
                 if (top < vs.Top) top = vs.Top;
                 if (left + src > vs.Right) left = vs.Right - src;
                 if (top + src > vs.Bottom) top = vs.Bottom - src;
+                lastLeft = left;
+                lastTop = top;
 
                 var img = capture.Capture(new RectI(left, top, src, src));
                 var srcBmp = ToBitmap(img);
@@ -442,6 +585,9 @@ namespace PindleRunner
 
             [DllImport("user32.dll")]
             static extern bool GetCursorPos(out POINT lpPoint);
+
+            [DllImport("user32.dll")]
+            static extern bool SetCursorPos(int X, int Y);
         }
     }
 }
