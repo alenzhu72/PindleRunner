@@ -245,3 +245,93 @@ FOR I = 1 TO 10
   DELAY 100
 NEXT
 ```
+
+### 10) TGMSG / TGSHOT（新增：Telegram 发消息与截屏）
+用于通过 Telegram Bot 给指定账号（chat_id）发送文本消息或当前目标窗口截图。
+
+**脚本内配置（推荐）**
+在脚本文件开头写两行（这是脚本语法，不是 PowerShell；只影响脚本运行时配置）：
+```vb
+$env:TELEGRAM_BOT_TOKEN = "123456789:AAE..."
+$env:TELEGRAM_CHAT_ID = "123456789"
+```
+
+也支持不写 `$env:` 前缀：
+```vb
+TELEGRAM_BOT_TOKEN = "123456789:AAE..."
+TELEGRAM_CHAT_ID = "123456789"
+```
+
+**语法**
+```
+TGMSG "要发送的文本"
+TGSHOT
+TGSHOT "截图说明文字(可选)"
+TGSHOT x1 y1 x2 y2 "截图说明文字(可选)"
+```
+
+**可选：在指令里直接传 token/chat_id（不推荐写进脚本仓库）**
+```
+TGMSG "123456:ABC..." "123456789" "hello"
+TGSHOT "123456:ABC..." "123456789"
+TGSHOT "123456:ABC..." "123456789" 0 0 1279 799 "full window"
+```
+
+**输出变量**
+- `FOUND`：发送成功为 `1`，失败为 `0`
+
+**示例：找到目标颜色就发消息 + 截屏**
+```
+FINDCOLOR 0 0 1279 799 "#FFA800" 0.95
+IF FOUND == 1 THEN TGMSG "检测到橙色物品"
+IF FOUND == 1 THEN TGSHOT "当前画面"
+```
+
+## 🤖 Telegram Bot 创建与绑定教程（详细）
+
+### 1) 创建 Bot 并拿到 Token
+1. 打开 Telegram，搜索并进入 `@BotFather`
+2. 发送 `/newbot`
+3. 按提示输入：
+   - Bot 显示名（随意）
+   - Bot 用户名（必须以 `bot` 结尾，例如 `pindle_runner_bot`）
+4. BotFather 会返回一串 token，形如：
+   - `123456789:AAE...`  
+   这就是 `TELEGRAM_BOT_TOKEN`
+
+### 2) 获取你的 Bot 链接（让账号先“启动”Bot）
+Bot 的公开链接就是：
+- `https://t.me/<你的bot用户名>`
+
+注意：Bot 不能主动给“从未和它聊过天”的账号发第一条消息。你需要先点开链接并对 Bot 发一次 `/start`（或随便发一句话）。
+
+### 3) 获取 chat_id（最推荐的方法：getUpdates）
+1. 用你的账号打开刚创建的 Bot，对它发一条消息（例如 `/start` 或 `hi`）
+2. 在浏览器打开下面这个链接（把 `<TOKEN>` 换成你的 token）：
+   - `https://api.telegram.org/bot<TOKEN>/getUpdates`
+3. 在返回的 JSON 里找到：
+   - `message` -> `chat` -> `id`
+4. 这个 `id` 就是 `TELEGRAM_CHAT_ID`
+
+补充说明：
+- 个人聊天：`chat.id` 通常是正整数
+- 群/超级群：`chat.id` 可能是负数（超级群经常是 `-100...`）
+- 频道：需要让 Bot 具备向频道发消息的权限，chat_id 也可能是 `-100...`（或使用 `@channel_username`，但仍建议用 id）
+
+### 4) 在 Windows 配置环境变量（PowerShell）
+只对当前 PowerShell 窗口生效：
+```powershell
+$env:TELEGRAM_BOT_TOKEN = "123456789:AAE..."
+$env:TELEGRAM_CHAT_ID = "123456789"
+```
+
+永久写入用户环境变量（写入后需要重启 PindleRunner 才会读到）：
+```powershell
+setx TELEGRAM_BOT_TOKEN "123456789:AAE..."
+setx TELEGRAM_CHAT_ID "123456789"
+```
+
+### 5) 常见问题排查
+- `chat not found`：通常是 chat_id 不对，或你还没给 Bot 发过消息（没 /start）
+- 群里收不到：把 Bot 拉进群后先发几条消息，再用 `getUpdates` 重新取一次群的 chat_id
+- Token 泄漏：立刻去 BotFather 执行 `/revoke`（或重新生成 token），不要把 token 提交到代码仓库

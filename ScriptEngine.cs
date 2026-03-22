@@ -1,13 +1,19 @@
 using System;
 using System.Collections.Generic;
+using System.Drawing;
+using System.Drawing.Imaging;
 using System.Globalization;
 using System.IO;
+using System.Net.Http;
+using System.Net.Http.Headers;
+using System.Runtime.InteropServices;
 using System.Threading;
 
 namespace PindleRunner
 {
     public sealed class ScriptEngine
     {
+        static readonly HttpClient TelegramHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
         readonly WindowManager window;
         readonly ScreenCapture capture;
         readonly InputSimulator input;
@@ -16,6 +22,7 @@ namespace PindleRunner
         readonly Stack<int> doStack = new();
         readonly Stack<ForFrame> forStack = new();
         readonly Dictionary<string, double> vars = new(StringComparer.OrdinalIgnoreCase);
+        readonly Dictionary<string, string> svars = new(StringComparer.OrdinalIgnoreCase);
         string? watchdogKey;
         int watchdogStreak;
         const int DefaultWatchdogThreshold = 100;
@@ -68,6 +75,7 @@ namespace PindleRunner
             doStack.Clear();
             forStack.Clear();
             vars.Clear();
+            svars.Clear();
             watchdogKey = null;
             watchdogStreak = 0;
             var cleaned = new List<string>(lines.Length);
@@ -313,6 +321,116 @@ namespace PindleRunner
                     }
                     Console.WriteLine(string.Join("", parts));
                 }
+                return null;
+            }
+
+            if ((t[0].Equals("TGMSG", StringComparison.OrdinalIgnoreCase) ||
+                 t[0].Equals("TELEMSG", StringComparison.OrdinalIgnoreCase) ||
+                 t[0].Equals("TELEGRAMMSG", StringComparison.OrdinalIgnoreCase)) && t.Length >= 2)
+            {
+                int idx = 1;
+                string botToken;
+                string chatId;
+
+                if (t.Length >= 4 && t[1].Contains(':', StringComparison.Ordinal))
+                {
+                    botToken = Unquote(t[1]);
+                    chatId = Unquote(t[2]);
+                    idx = 3;
+                }
+                else
+                {
+                    if (!TryGetTelegramConfig(out botToken, out chatId))
+                    {
+                        vars["FOUND"] = 0;
+                        Console.WriteLine("[WARNING] TGMSG 发送失败：未配置 TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID");
+                        return null;
+                    }
+                }
+
+                var text = BuildText(t, idx, t.Length - idx);
+                var ok = TelegramSendMessage(botToken, chatId, text, out var err);
+                vars["FOUND"] = ok ? 1 : 0;
+                if (ok) Console.WriteLine("[DEBUG] TGMSG OK");
+                else Console.WriteLine($"[WARNING] TGMSG 发送失败: {TrimOneLine(err, 400)}");
+                return null;
+            }
+
+            if ((t[0].Equals("TGSHOT", StringComparison.OrdinalIgnoreCase) ||
+                 t[0].Equals("TELESHOT", StringComparison.OrdinalIgnoreCase) ||
+                 t[0].Equals("TELEGRAMSHOT", StringComparison.OrdinalIgnoreCase)) && t.Length >= 1)
+            {
+                int idx = 1;
+                string botToken;
+                string chatId;
+
+                if (t.Length >= 3 && t[1].Contains(':', StringComparison.Ordinal))
+                {
+                    botToken = Unquote(t[1]);
+                    chatId = Unquote(t[2]);
+                    idx = 3;
+                }
+                else
+                {
+                    if (!TryGetTelegramConfig(out botToken, out chatId))
+                    {
+                        vars["FOUND"] = 0;
+                        Console.WriteLine("[WARNING] TGSHOT 发送失败：未配置 TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID");
+                        return null;
+                    }
+                }
+
+                if (!window.GetClientRect(out var rect))
+                {
+                    vars["FOUND"] = 0;
+                    Console.WriteLine("[WARNING] TGSHOT 发送失败：无法获取窗口坐标");
+                    return null;
+                }
+
+                string caption = "";
+                RectI grab;
+
+                int remaining = t.Length - idx;
+                if (remaining >= 4)
+                {
+                    int x1 = (int)Eval(t[idx + 0]);
+                    int y1 = (int)Eval(t[idx + 1]);
+                    int x2 = (int)Eval(t[idx + 2]);
+                    int y2 = (int)Eval(t[idx + 3]);
+
+                    int xmin = Math.Max(0, Math.Min(x1, x2));
+                    int xmax = Math.Min(rect.Width - 1, Math.Max(x1, x2));
+                    int ymin = Math.Max(0, Math.Min(y1, y2));
+                    int ymax = Math.Min(rect.Height - 1, Math.Max(y1, y2));
+                    int w = xmax - xmin + 1;
+                    int h = ymax - ymin + 1;
+
+                    if (w <= 0 || h <= 0)
+                    {
+                        vars["FOUND"] = 0;
+                        Console.WriteLine("[WARNING] TGSHOT 发送失败：区域参数无效");
+                        return null;
+                    }
+
+                    grab = new RectI(rect.X + xmin, rect.Y + ymin, w, h);
+                    if (remaining > 4) caption = BuildText(t, idx + 4, remaining - 4);
+                }
+                else if (remaining >= 1)
+                {
+                    grab = rect;
+                    caption = BuildText(t, idx, remaining);
+                }
+                else
+                {
+                    grab = rect;
+                }
+
+                var img = capture.Capture(grab);
+                var png = ImageDataToPng(img);
+                var ok = TelegramSendPhoto(botToken, chatId, png, "screen.png", caption, out var err);
+                vars["FOUND"] = ok ? 1 : 0;
+                if (ok) Console.WriteLine("[DEBUG] TGSHOT OK");
+                else Console.WriteLine($"[WARNING] TGSHOT 发送失败: {TrimOneLine(err, 400)}");
                 return null;
             }
             
@@ -726,6 +844,14 @@ namespace PindleRunner
                 return null;
             }
 
+            if (t.Length == 3 && t[1] == "=" && t[2].Length >= 2 && t[2][0] == '"' && t[2][^1] == '"')
+            {
+                var varName = NormalizeVarName(t[0]);
+                svars[varName] = Unquote(t[2]);
+                Console.WriteLine($"[DEBUG] SET {varName}");
+                return null;
+            }
+
             // Assignment: i = 0 or i = i + 1
             if (t.Length >= 3 && t[1] == "=")
             {
@@ -754,6 +880,149 @@ namespace PindleRunner
             // Fallback for unrecognized commands
             Console.WriteLine($"[WARNING] 未知指令或参数格式错误: {string.Join(" ", t)}");
             return null;
+        }
+
+        string BuildText(string[] t, int startIdx, int count)
+        {
+            if (count <= 0) return "";
+            if (count == 1) return BuildPart(t[startIdx]);
+
+            var parts = new List<string>(count);
+            for (int i = 0; i < count; i++)
+            {
+                parts.Add(BuildPart(t[startIdx + i]));
+            }
+            return string.Join("", parts);
+        }
+
+        string BuildPart(string token)
+        {
+            if (token.Length >= 2 && token[0] == '"' && token[^1] == '"') return token.Substring(1, token.Length - 2);
+            var key = NormalizeVarName(token);
+            if (svars.TryGetValue(key, out var sv) && !string.IsNullOrWhiteSpace(sv)) return sv;
+            return Eval(token).ToString(CultureInfo.InvariantCulture);
+        }
+
+        static string NormalizeVarName(string s)
+        {
+            s = s.Trim();
+            if (s.StartsWith("$env:", StringComparison.OrdinalIgnoreCase)) return s.Substring(5);
+            return s;
+        }
+
+        bool TryGetTelegramConfig(out string botToken, out string chatId)
+        {
+            if (!TryGetTelegramConfigValue("TELEGRAM_BOT_TOKEN", "TG_BOT_TOKEN", out botToken)) botToken = "";
+            if (!TryGetTelegramConfigValue("TELEGRAM_CHAT_ID", "TG_CHAT_ID", out chatId)) chatId = "";
+            if (string.IsNullOrWhiteSpace(botToken) || string.IsNullOrWhiteSpace(chatId)) return false;
+            return true;
+        }
+
+        bool TryGetTelegramConfigValue(string key1, string key2, out string value)
+        {
+            if (svars.TryGetValue(key1, out var v1))
+            {
+                value = (v1 ?? "").Trim();
+                if (!string.IsNullOrWhiteSpace(value)) return true;
+            }
+            if (svars.TryGetValue(key2, out var v2))
+            {
+                value = (v2 ?? "").Trim();
+                if (!string.IsNullOrWhiteSpace(value)) return true;
+            }
+
+            value = (Environment.GetEnvironmentVariable(key1) ?? Environment.GetEnvironmentVariable(key2) ?? "").Trim();
+            if (!string.IsNullOrWhiteSpace(value)) return true;
+            value = "";
+            return false;
+        }
+
+        static string Unquote(string s)
+        {
+            s = s.Trim();
+            if (s.Length >= 2 && s[0] == '"' && s[^1] == '"') return s.Substring(1, s.Length - 2);
+            return s;
+        }
+
+        static string TrimOneLine(string s, int maxLen)
+        {
+            if (string.IsNullOrEmpty(s)) return "";
+            s = s.Replace("\r", " ").Replace("\n", " ").Trim();
+            if (s.Length <= maxLen) return s;
+            return s.Substring(0, maxLen);
+        }
+
+        static bool TelegramSendMessage(string botToken, string chatId, string text, out string error)
+        {
+            error = "";
+            try
+            {
+                var url = $"https://api.telegram.org/bot{botToken}/sendMessage";
+                using var content = new FormUrlEncodedContent(new[]
+                {
+                    new KeyValuePair<string, string>("chat_id", chatId),
+                    new KeyValuePair<string, string>("text", text)
+                });
+                using var resp = TelegramHttp.PostAsync(url, content).GetAwaiter().GetResult();
+                if (resp.IsSuccessStatusCode) return true;
+                error = resp.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+                return false;
+            }
+            catch (Exception ex)
+            {
+                error = ex.Message;
+                return false;
+            }
+        }
+
+        static bool TelegramSendPhoto(string botToken, string chatId, byte[] pngBytes, string fileName, string caption, out string error)
+        {
+            error = "";
+            try
+            {
+                var url = $"https://api.telegram.org/bot{botToken}/sendPhoto";
+                using var form = new MultipartFormDataContent();
+                form.Add(new StringContent(chatId), "chat_id");
+                if (!string.IsNullOrWhiteSpace(caption)) form.Add(new StringContent(caption), "caption");
+
+                using var photo = new ByteArrayContent(pngBytes);
+                photo.Headers.ContentType = new MediaTypeHeaderValue("image/png");
+                form.Add(photo, "photo", fileName);
+
+                using var resp = TelegramHttp.PostAsync(url, form).GetAwaiter().GetResult();
+                if (resp.IsSuccessStatusCode) return true;
+                error = resp.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+                return false;
+            }
+            catch (Exception ex)
+            {
+                error = ex.Message;
+                return false;
+            }
+        }
+
+        static byte[] ImageDataToPng(ImageData img)
+        {
+            using var bmp = new Bitmap(img.Width, img.Height, PixelFormat.Format32bppArgb);
+            var data = bmp.LockBits(new Rectangle(0, 0, img.Width, img.Height), ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
+            try
+            {
+                int srcStride = img.Stride;
+                int dstStride = data.Stride;
+                int rowBytes = img.Width * 4;
+                for (int y = 0; y < img.Height; y++)
+                {
+                    Marshal.Copy(img.Buffer, y * srcStride, IntPtr.Add(data.Scan0, y * dstStride), rowBytes);
+                }
+            }
+            finally
+            {
+                bmp.UnlockBits(data);
+            }
+
+            using var ms = new MemoryStream();
+            bmp.Save(ms, ImageFormat.Png);
+            return ms.ToArray();
         }
 
         void TrackWatchdog(string key, bool found, string hex)
